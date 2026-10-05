@@ -1,0 +1,262 @@
+version: "3.9"
+
+# =============================================================================
+# Freddie Mac-Style Home Loan Application — Simplified Developer Stack
+# =============================================================================
+# Databases: PostgreSQL (freddie_customer + freddie_loans)
+# Services:
+#   - PostgreSQL
+#   - Zipkin
+#   - Eureka Server
+#   - API Gateway
+#   - Auth Service
+#   - Customer Service
+#   - Loan Origination Service
+#   - Underwriting Service
+#   - Document Service
+# =============================================================================
+
+networks:
+  freddie-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+
+services:
+
+  # ─── INFRASTRUCTURE ────────────────────────────────────────────────────────
+
+  postgresql:
+    image: postgres:16-alpine
+    container_name: freddie-postgresql
+    networks: [freddie-net]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: freddie_admin
+      POSTGRES_PASSWORD: freddie_secret
+      POSTGRES_DB: freddie_customer
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/postgresql/init_databases.sql:/docker-entrypoint-initdb.d/00_init_databases.sql
+      - ../database/postgresql/ddl:/docker-entrypoint-initdb.d/ddl
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U freddie_admin -d freddie_customer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zipkin:
+    image: openzipkin/zipkin:3
+    container_name: freddie-zipkin
+    networks: [freddie-net]
+    ports:
+      - "9411:9411"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9411/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── INFRASTRUCTURE SERVICES ───────────────────────────────────────────────
+
+  eureka-server:
+    build:
+      context: ../eureka-server
+    image: freddie/eureka-server:latest
+    container_name: freddie-eureka
+    networks: [freddie-net]
+    ports:
+      - "8761:8761"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8761/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: ../api-gateway
+    image: freddie/api-gateway:latest
+    container_name: freddie-gateway
+    networks: [freddie-net]
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+      SPRING_ZIPKIN_BASE_URL: http://zipkin:9411
+      SPRING_PROFILES_ACTIVE: docker
+
+  # ─── CORE MICROSERVICES ───────────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: ../auth-service
+    image: freddie/auth-service:latest
+    container_name: freddie-auth-svc
+    networks: [freddie-net]
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8085:8085"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+
+  customer-service:
+    build:
+      context: ../customer-service
+    image: freddie/customer-service:latest
+    container_name: freddie-customer-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/freddie_customer
+      SPRING_DATASOURCE_USERNAME: freddie_admin
+      SPRING_DATASOURCE_PASSWORD: freddie_secret
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: freddie_customer
+      SPRING_JPA_HIBERNATE_DDL_AUTO: none
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  loan-origination-service:
+    build:
+      context: ../loan-origination-service
+    image: freddie/loan-origination-service:latest
+    container_name: freddie-loan-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/freddie_loans
+      SPRING_DATASOURCE_USERNAME: freddie_admin
+      SPRING_DATASOURCE_PASSWORD: freddie_secret
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: freddie_loans
+      SPRING_JPA_HIBERNATE_DDL_AUTO: none
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
+
+  underwriting-service:
+    build:
+      context: ../underwriting-service
+    image: freddie/underwriting-service:latest
+    container_name: freddie-underwriting-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/freddie_loans
+      SPRING_DATASOURCE_USERNAME: freddie_admin
+      SPRING_DATASOURCE_PASSWORD: freddie_secret
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: freddie_uw
+      SPRING_JPA_HIBERNATE_DDL_AUTO: none
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
+
+  document-service:
+    build:
+      context: ../document-service
+    image: freddie/document-service:latest
+    container_name: freddie-document-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_R2DBC_URL: r2dbc:postgresql://postgresql:5432/freddie_customer
+      SPRING_R2DBC_USERNAME: freddie_admin
+      SPRING_R2DBC_PASSWORD: freddie_secret
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
+
+  login-frontend-service:
+    build:
+      context: ../login-frontend-service
+    image: freddie/login-frontend-service:latest
+    container_name: freddie-login-frontend-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/freddie_customer
+      SPRING_DATASOURCE_USERNAME: freddie_admin
+      SPRING_DATASOURCE_PASSWORD: freddie_secret
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: freddie_customer
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+
+  loan-frontend-service:
+    build:
+      context: ../loan-frontend-service
+    image: freddie/loan-frontend-service:latest
+    container_name: freddie-loan-frontend-svc
+    networks: [freddie-net]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    ports:
+      - "8089:8089"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/freddie_loans
+      SPRING_DATASOURCE_USERNAME: freddie_admin
+      SPRING_DATASOURCE_PASSWORD: freddie_secret
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: freddie_loans
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka
+
+  rate-calculator-service:
+    build:
+      context: ../rate-calculator-service
+    image: freddie/rate-calculator-service:latest
+    container_name: freddie-rate-calculator-svc
+    networks: [freddie-net]
+    ports:
+      - "8090:8090"
+
+
