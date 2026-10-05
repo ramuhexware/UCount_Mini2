@@ -161,4 +161,10 @@ public class LoanOriginationController {
     public ResponseEntity<List<UcsAcsGrp>> findAllAccessGroups() {
         return ResponseEntity.ok(service.findAllAccessGroupsNamedQuery());
     }
+
+    // Complex Native SQL Query (Multi-table join, Correlated Subquery, CASE WHEN, Derived UNION, Const injection)
+    @GetMapping("/reports/complex-summary")
+    public ResponseEntity<List<Object[]>> getComplexMultiTableDerivedSummary() {
+        return ResponseEntity.ok(service.getComplexMultiTableDerivedSummary());
+    }
 }

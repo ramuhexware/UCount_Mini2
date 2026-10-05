@@ -6,6 +6,7 @@ import com.freddieapp.origination.domain.UcsCntprtyAcct;
 import com.freddieapp.origination.dto.LoanDTOs.*;
 import com.freddieapp.origination.processor.UnderwritingRuleProcessor;
 import com.freddieapp.origination.repository.LoanApplicationRepository;
+import com.freddieapp.origination.util.Const;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -403,5 +404,37 @@ public class LoanOriginationService {
     @Transactional(readOnly = true)
     public List<UcsAcsGrp> findAllAccessGroupsNamedQuery() {
         return entityManager.createNamedQuery("UcsAcsGrp.findAll", UcsAcsGrp.class).getResultList();
+    }
+
+    /**
+     * Multi-table joins across many tables in one native statement.
+     * Correlated subqueries: ... = (select max(DTTM_CREATE) from UCS_APPL_TRKG tk ...)
+     * CASE WHEN projections returning List<Object[]> (untyped tuples).
+     * Nested derived-table + UNION: SELECT * FROM ((SELECT 'General' AS Category, ...) ...)
+     * String-concatenated constants injected from a Const class: + Const.YES + ... + Const.NO
+     */
+    @SuppressWarnings("unchecked")
+    @Transactional(readOnly = true)
+    public List<Object[]> getComplexMultiTableDerivedSummary() {
+        String sql = "SELECT * FROM ((" +
+                     "SELECT 'General' AS Category, la.id AS loan_id, la.customer_id, la.loan_amount, " +
+                     "CASE WHEN la.loan_amount > 500000 THEN " + Const.YES + " ELSE " + Const.NO + " END AS is_jumbo_loan " +
+                     "FROM loan_applications la " +
+                     "JOIN ucs_cntprty_acct ac ON la.customer_id = ac.id_cntprty_acct " +
+                     "JOIN ucs_cntprty_acct_rltnp rltnp ON ac.id_cntprty_acct = rltnp.id_cntprty_acct " +
+                     "LEFT JOIN ucs_acs_grp grp ON rltnp.id_orgtn_role = grp.id_acs_grp " +
+                     "WHERE la.created_at = (SELECT MAX(tk.DTTM_CREATE) FROM UCS_APPL_TRKG tk WHERE tk.id_appl = la.customer_id)" +
+                     ") UNION (" +
+                     "SELECT 'Special' AS Category, la.id AS loan_id, la.customer_id, la.loan_amount, " +
+                     "CASE WHEN la.loan_amount > 750000 THEN " + Const.YES + " ELSE " + Const.NO + " END AS is_jumbo_loan " +
+                     "FROM loan_applications la " +
+                     "JOIN ucs_cntprty_acct ac ON la.customer_id = ac.id_cntprty_acct " +
+                     "JOIN ucs_cntprty_acct_rltnp rltnp ON ac.id_cntprty_acct = rltnp.id_cntprty_acct " +
+                     "LEFT JOIN ucs_acs_grp grp ON rltnp.id_orgtn_role = grp.id_acs_grp " +
+                     "WHERE rltnp.st_cntprty_acct_rltnp = " + Const.ACTIVE +
+                     ")) AS derived_summary";
+
+        Query query = entityManager.createNativeQuery(sql);
+        return query.getResultList();
     }
 }

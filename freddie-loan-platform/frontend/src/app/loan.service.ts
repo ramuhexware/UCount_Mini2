@@ -370,4 +370,25 @@ EQUAL HOUSING OPPORTUNITY - FREDDIE MAC ENTERPRISE`,
       ]))
     );
   }
+
+  // JPA Criteria API Count Query
+  getDistinctCounterpartyAccountCount(): Observable<number> {
+    return this.http.get<number>(`${this.backendBase}/counterparty/accounts/count`).pipe(
+      catchError(() => of(0))
+    );
+  }
+
+  // Entity @NamedQuery Declaration Query
+  findAllAccessGroups(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendBase}/access-groups`).pipe(
+      catchError(() => of([]))
+    );
+  }
+
+  // Complex Multi-table Derived Native Summary Query
+  getComplexMultiTableDerivedSummary(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendBase}/reports/complex-summary`).pipe(
+      catchError(() => of([]))
+    );
+  }
 }
