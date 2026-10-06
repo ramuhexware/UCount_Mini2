@@ -17,13 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
-import jakarta.persistence.Query;
-import jakarta.persistence.criteria.CriteriaBuilder;
-import jakarta.persistence.criteria.CriteriaQuery;
-import jakarta.persistence.criteria.Root;
-
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -42,9 +35,6 @@ public class LoanOriginationService {
     private final LoanApplicationRepository repository;
     private final UnderwritingRuleProcessor underwritingRuleProcessor;
     private final WebClient webClient;
-
-    @PersistenceContext
-    private EntityManager entityManager;
 
     @Value("${dataServiceURL:http://localhost:8082/api/v1}")
     private String dataServiceURL;
@@ -353,88 +343,44 @@ public class LoanOriginationService {
             .orElseThrow(() -> new UcsApiException(HttpStatus.NOT_FOUND, "Text block not found for code: " + code));
     }
 
-    // Dynamic Native SQL through EntityManager.createNativeQuery for complex dynamic filters
-    @SuppressWarnings("unchecked")
+    // Counterparty relationships query executed via Repository @Query method
     @Transactional(readOnly = true)
     public List<Object[]> searchCounterpartyRelationships(String searchCriteriaList) {
-        String sql = "select distinct rltnp.id_cntprty_acct, rltnp.id_rltd_cntprty_acct, rltnp.id_orgtn_role " +
-                     "from ucs_cntprty_acct_rltnp rltnp where 1=1 " + (searchCriteriaList != null ? searchCriteriaList : "");
-        Query query = entityManager.createNativeQuery(sql);
-        return query.getResultList();
+        return repository.searchCounterpartyRelationships();
     }
 
-    // Dynamic Native SQL through EntityManager.createNativeQuery for direct DML inserts
+    // Direct DML inserts executed via Repository @Query method
     @Transactional
     public int executeDirectDmlInsert(String idCntprtyAcct, String idRltdCntprtyAcct, Integer idOrgtnRole) {
-        String insertSql = "INSERT INTO ucs_cntprty_acct_rltnp (id_cntprty_acct, id_rltd_cntprty_acct, id_orgtn_role, st_cntprty_acct_rltnp) " +
-                           "VALUES (:idCntprty, :idRltd, :idRole, 'ACTIVE')";
-        return entityManager.createNativeQuery(insertSql)
-                .setParameter("idCntprty", idCntprtyAcct)
-                .setParameter("idRltd", idRltdCntprtyAcct)
-                .setParameter("idRole", idOrgtnRole)
-                .executeUpdate();
+        return repository.executeDirectDmlInsert(idCntprtyAcct, idRltdCntprtyAcct, idOrgtnRole);
     }
 
     @Transactional
     public int insertUcsOrgtnCntct(Object idOrgtnCntct, Object orgId, Object idIndvl) {
-        return entityManager.createNativeQuery(
-            "INSERT INTO UCS_ORGTN_CNTCT (ID_ORGTN_CNTCT, ID_ORGTN, ID_INDVL) VALUES (:idOrgtnCntct, :idOrgtn, :idIndvl)")
-            .setParameter("idOrgtnCntct", idOrgtnCntct)
-            .setParameter("idOrgtn", orgId)
-            .setParameter("idIndvl", idIndvl)
-            .executeUpdate();
+        return repository.insertUcsOrgtnCntct(idOrgtnCntct, orgId, idIndvl);
     }
 
     /**
-     * JPA Criteria API query construction
-     * SQL is generated from Criteria objects (type-safe query builder style).
+     * JPA query delegating to Repository
      */
     @Transactional(readOnly = true)
     public Long getDistinctCounterpartyAccountCount() {
-        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
-        CriteriaQuery<Long> countQuery = cb.createQuery(Long.class);
-        Root<UcsCntprtyAcct> root = countQuery.from(UcsCntprtyAcct.class);
-        countQuery.select(cb.countDistinct(root));
-        return entityManager.createQuery(countQuery).getSingleResult();
+        return repository.getDistinctCounterpartyAccountCount();
     }
 
     /**
-     * Named JPQL query declaration on entities (Predefined query at entity level).
+     * Named JPQL query delegating to Repository
      */
     @Transactional(readOnly = true)
     public List<UcsAcsGrp> findAllAccessGroupsNamedQuery() {
-        return entityManager.createNamedQuery("UcsAcsGrp.findAll", UcsAcsGrp.class).getResultList();
+        return repository.findAllAccessGroupsNamedQuery();
     }
 
     /**
-     * Multi-table joins across many tables in one native statement.
-     * Correlated subqueries: ... = (select max(DTTM_CREATE) from UCS_APPL_TRKG tk ...)
-     * CASE WHEN projections returning List<Object[]> (untyped tuples).
-     * Nested derived-table + UNION: SELECT * FROM ((SELECT 'General' AS Category, ...) ...)
-     * String-concatenated constants injected from a Const class: + Const.YES + ... + Const.NO
+     * Multi-table joins summary delegating to Repository
      */
-    @SuppressWarnings("unchecked")
     @Transactional(readOnly = true)
     public List<Object[]> getComplexMultiTableDerivedSummary() {
-        String sql = "SELECT * FROM ((" +
-                     "SELECT 'General' AS Category, la.id AS loan_id, la.customer_id, la.loan_amount, " +
-                     "CASE WHEN la.loan_amount > 500000 THEN " + Const.YES + " ELSE " + Const.NO + " END AS is_jumbo_loan " +
-                     "FROM loan_applications la " +
-                     "JOIN ucs_cntprty_acct ac ON la.customer_id = ac.id_cntprty_acct " +
-                     "JOIN ucs_cntprty_acct_rltnp rltnp ON ac.id_cntprty_acct = rltnp.id_cntprty_acct " +
-                     "LEFT JOIN ucs_acs_grp grp ON rltnp.id_orgtn_role = grp.id_acs_grp " +
-                     "WHERE la.created_at = (SELECT MAX(tk.DTTM_CREATE) FROM UCS_APPL_TRKG tk WHERE tk.id_appl = la.customer_id)" +
-                     ") UNION (" +
-                     "SELECT 'Special' AS Category, la.id AS loan_id, la.customer_id, la.loan_amount, " +
-                     "CASE WHEN la.loan_amount > 750000 THEN " + Const.YES + " ELSE " + Const.NO + " END AS is_jumbo_loan " +
-                     "FROM loan_applications la " +
-                     "JOIN ucs_cntprty_acct ac ON la.customer_id = ac.id_cntprty_acct " +
-                     "JOIN ucs_cntprty_acct_rltnp rltnp ON ac.id_cntprty_acct = rltnp.id_cntprty_acct " +
-                     "LEFT JOIN ucs_acs_grp grp ON rltnp.id_orgtn_role = grp.id_acs_grp " +
-                     "WHERE rltnp.st_cntprty_acct_rltnp = " + Const.ACTIVE +
-                     ")) AS derived_summary";
-
-        Query query = entityManager.createNativeQuery(sql);
-        return query.getResultList();
+        return repository.getComplexMultiTableDerivedSummary();
     }
 }
